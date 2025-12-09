@@ -16,6 +16,8 @@
 //--------------------------------------------
 
 #define HUMAN_MACHINE_INTERFACE_PRIORITY     33
+#define TIME_MANAGEMENT_PRIORITY             35
+#define MANAGE_LAW_ACQUIRE_PRIORITY          37
 //********   This space must be completed if needed *****  
 
 //--------------------------------------------
@@ -53,7 +55,7 @@ RT_SEM ExitApplication_Semaphore; //finished
 // Mutual exclusion semaphores descriptors    
 //--------------------------------------------
 // https://gitlab-pages.isae-supaero.fr/l.alloza/doc-xenomai3/group__alchemy__mutex.html
-
+RT_MUTEX DataMutex;
 //********   This space must be completed if needed *****  
 
 //--------------------------------------------
@@ -68,6 +70,8 @@ RT_SEM ExitApplication_Semaphore; //finished
 // Global variables communication and synchronization tasks by shared memory 
 //--------------------------------------------------------------------------
 // bool myFlag
+volatile bool experimentRunning = false;
+volatile unsigned long ExperimentElapsedMs = 0;
 //**** This space must be completed if needed *****  
 
 
@@ -88,13 +92,57 @@ void HumanMachineInterface_Task()
 
 void TimeManagement_Task()
 {
-    
+    rt_printf("Starting Time Management task\r\n");
+
+    struct timespec start, now;
+
+    while(1) {
+        // Attendre le démarrage d'une expérience
+        rt_sem_p(&StartExperiment_Semaphore, TM_INFINITE);
+
+        clock_gettime(CLOCK_MONOTONIC, &start);
+        experimentRunning = true;
+        ExperimentElapsedMs = 0;
+
+        while(experimentRunning) {
+            clock_gettime(CLOCK_MONOTONIC, &now);
+            ExperimentElapsedMs = (unsigned long)(now.tv_sec - start.tv_sec) * 1000UL
+                                + (now.tv_nsec - start.tv_nsec) / 1000000UL;
+
+            // Vérifier si durée max atteinte
+            if(ExperimentElapsedMs >= ExperimentParameters.experimentDuration * 1000) {
+                experimentRunning = false;
+                rt_sem_v(&ExitApplication_Semaphore);
+            }
+
+            rt_task_sleep(1000000); // 1ms
+        }
+    }
 }
 
 void ManageLawAcquire_Task()
 {
-    
+    rt_printf("Starting Manage Law Acquire task\r\n");
+
+    SampleType sample;
+
+    while(1) {
+        if(experimentRunning) {
+            SampleAcquisition(&sample);
+
+            rt_printf("[DATA] M:%.2f P:%.2f Pos:%.2f I:%.2f\r\n",
+                      sample.motorSpeed,
+                      sample.platformSpeed,
+                      sample.platformPosition,
+                      sample.motorCurrent);
+
+            rt_task_sleep(100000000); // 100ms
+        } else {
+            rt_task_sleep(500000000); // 500ms en attente
+        }
+    }
 }
+
 
 //-----------------------------------------------------------
 // functions called from HMI_Utilities
@@ -103,18 +151,19 @@ void ManageLawAcquire_Task()
 // called from function "manageRequest" in file WheelHMI.c  
 void AbortExperiment(void)
 {
-   rt_printf("Aborted\r\n");
-   rt_sem_create(&ExitApplication_Semaphore, "Exit", 0, S_FIFO);
-   float emptyBlock[1] = {0.0f};
-   WriteRealArray('F', emptyBlock, 1);
+    rt_printf("Aborted\r\n");
+    experimentRunning = false;
+    SetMotorCommand(0.0f); // Arrêter le moteur
+    float emptyBlock[1] = {0.0f};
+    WriteRealArray('F', emptyBlock, 1);
 }
-//-----------------------------------------------------------
 
 void StartExperiment(void)
 {
-   rt_printf("Started\r\n");
-   rt_sem_create(&StartExperiment_Semaphore, "Start", 0, S_FIFO);
+    rt_printf("Started\r\n");
+    rt_sem_v(&StartExperiment_Semaphore); // Débloquer la tâche TimeManagement
 }
+
 //----------------------------------------------------------
 
 void TimeManagement()
@@ -221,14 +270,14 @@ int main(int argc, char* argv[])
 
     // Mutual exclusion semaphore creation                     
     //---------------------------------------------------------
-    // rt_mutex_create(...);                       
+    rt_mutex_create(&DataMutex, "DataMutex");
     // **** This space must be completed  if needed   ***** 
 
     // Tasks creation                                          
     //---------------------------------------------------------
     rt_task_create(&HumanMachineInterface_TaskDescriptor, "ReturnSensorsMeasurementestTask", DEFAULTSTACKSIZE, HUMAN_MACHINE_INTERFACE_PRIORITY, 0);
-    rt_task_create(&TimeManagement_TaskDescriptor, "TimeManagementTask", DEFAULTSTACKSIZE, HUMAN_MACHINE_INTERFACE_PRIORITY, 0);
-    rt_task_create(&ManageLawAcquire_TaskDescriptor, "ManageLawAcquireTask", DEFAULTSTACKSIZE, HUMAN_MACHINE_INTERFACE_PRIORITY, 0);
+    rt_task_create(&TimeManagement_TaskDescriptor, "TimeManagementTask", DEFAULTSTACKSIZE, TIME_MANAGEMENT_PRIORITY, 0);
+    rt_task_create(&ManageLawAcquire_TaskDescriptor, "ManageLawAcquireTask", DEFAULTSTACKSIZE, MANAGE_LAW_ACQUIRE_PRIORITY, 0);
 
 
 
@@ -273,7 +322,7 @@ int main(int argc, char* argv[])
     //------------------------------------------------------------
     // rt_queue_delete(...);                                 
     // **** This space must be completed  if needed   *****
-    
+    rt_mutex_delete(&DataMutex);
 
     rt_printf(" Application ..... finished--> exit\r\n");
     // Peripherals uninitialization 
