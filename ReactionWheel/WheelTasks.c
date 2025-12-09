@@ -64,6 +64,18 @@ RT_MUTEX DataMutex;
 // https://gitlab-pages.isae-supaero.fr/l.alloza/doc-xenomai3/group__alchemy__queue.html
 
 //********   This space must be completed if needed *****  
+RT_QUEUE SensorData_Queue;
+
+#define SENSOR_QUEUE_SIZE 100
+#define SENSOR_MSG_SIZE sizeof(SensorMessage)
+
+typedef struct {
+    float motorSpeed;
+    float platformSpeed;
+    float platformPosition;
+    float motorCurrent;
+    unsigned long timestamp;
+} SensorMessage;
 
 
 //--------------------------------------------------------------------------
@@ -110,13 +122,15 @@ void TimeManagement_Task()
                                 + (now.tv_nsec - start.tv_nsec) / 1000000UL;
 
             // Vérifier si durée max atteinte
-            if(ExperimentElapsedMs >= ExperimentParameters.experimentDuration * 1000) {
+            if(ExperimentElapsedMs >= ExperimentParameters.duration * 1000) {
                 experimentRunning = false;
                 rt_sem_v(&ExitApplication_Semaphore);
             }
 
             rt_task_sleep(1000000); // 1ms
+            
         }
+        
     }
 }
 
@@ -125,16 +139,19 @@ void ManageLawAcquire_Task()
     rt_printf("Starting Manage Law Acquire task\r\n");
 
     SampleType sample;
+    SensorMessage msg;
 
     while(1) {
         if(experimentRunning) {
             SampleAcquisition(&sample);
 
-            rt_printf("[DATA] M:%.2f P:%.2f Pos:%.2f I:%.2f\r\n",
-                      sample.motorSpeed,
-                      sample.platformSpeed,
-                      sample.platformPosition,
-                      sample.motorCurrent);
+            msg.motorSpeed = sample.motorSpeed;
+            msg.platformSpeed = sample.platformSpeed;
+            msg.platformPosition = sample.platformPosition;
+            msg.motorCurrent = sample.motorCurrent;
+            msg.timestamp = ExperimentElapsedMs;
+            
+            rt_queue_write(&SensorData_Queue, &msg, sizeof(SensorMessage), Q_NORMAL);
 
             rt_task_sleep(100000000); // 100ms
         } else {
@@ -152,8 +169,9 @@ void ManageLawAcquire_Task()
 void AbortExperiment(void)
 {
     rt_printf("Aborted\r\n");
+    rt_sem_create(&ExitApplication_Semaphore, "Exit", 0, S_FIFO);
+    Motor_terminate();
     experimentRunning = false;
-    SetMotorCommand(0.0f); // Arrêter le moteur
     float emptyBlock[1] = {0.0f};
     WriteRealArray('F', emptyBlock, 1);
 }
@@ -194,25 +212,26 @@ void TimeManagement()
 void ReturnSensorsMeasurement()
 {
     SampleType sample;
+    SensorMessage msg;
     
     float samplesBlock[50 * 4];
     char terminationChar;
     int i;
     float AP = ExperimentParameters.acquisitionPeriod ;
     float LP = ExperimentParameters.lawPeriod ;
-    int n = (LP/AP); 
+    int n = (int)(LP/AP); 
     
     for(i = 0; i < n; i++) {
-        SampleAcquisition(&sample);
-
-        samplesBlock[(i * 4)]     = sample.motorSpeed;
-        samplesBlock[(i * 4) + 1] = sample.platformSpeed;
-        samplesBlock[(i * 4) + 2] = sample.platformPosition;
-        samplesBlock[(i * 4) + 3] = sample.motorCurrent;
+        if (rt_queue_read(&SensorData_Queue,&msg, sizeof(SensorMessage), TM_INFINITE) >0) {
         
+        samplesBlock[(i * 4)]     = msg.motorSpeed;
+        samplesBlock[(i * 4) + 1] = msg.platformSpeed;
+        samplesBlock[(i * 4) + 2] = msg.platformPosition;
+        samplesBlock[(i * 4) + 3] = msg.motorCurrent;
+        }
     }
    
-    terminationChar = 'S';  
+    terminationChar = experimentRunning ? 'S' : 'F';  
     
     // terminationChar = 'F' if the experiment is finished
     WriteRealArray(terminationChar, samplesBlock, n * 4);
@@ -257,7 +276,8 @@ int main(int argc, char* argv[])
     // Message queues creation               
     // ------------------------------------- 
     // *** This space must be completed  if needed   ******
-    // rt_queue_create(...);
+    rt_queue_create(&SensorData_Queue,"SensorQueue",
+                    SENSOR_QUEUE_SIZE * SENSOR_MSG_SIZE, SENSOR_QUEUE_SIZE,Q_FIFO);
 
     // Semaphores creation                 
     // ------------------------------------
@@ -320,7 +340,7 @@ int main(int argc, char* argv[])
     //------------------------------------------------------------
     // Message queues destruction                                 
     //------------------------------------------------------------
-    // rt_queue_delete(...);                                 
+    rt_queue_delete(&SensorData_Queue);                                 
     // **** This space must be completed  if needed   *****
     rt_mutex_delete(&DataMutex);
 

@@ -7,5 +7,3 @@ Version=1.0
 Type=Application
 Terminal=0
 
-Icon=/home/master26/ems26/m.khalil/NetBeansProjects/Courseware/interface/Interface.png
-Exec=env http_proxy= /home/master26/ems26/m.khalil/NetBeansProjects/Courseware/interface/Interface.AppImage
