@@ -1,0 +1,158 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configurationDescriptor version="100">
+  <logicalFolder name="root" displayName="root" projectFiles="true" kind="ROOT">
+    <logicalFolder name="HeaderFiles"
+                   displayName="Header Files"
+                   projectFiles="true">
+      <itemPath>HardwareLib.h</itemPath>
+      <itemPath>ReactionWheel.h</itemPath>
+      <itemPath>SocketLib.h</itemPath>
+    </logicalFolder>
+    <logicalFolder name="SourceFiles"
+                   displayName="Source Files"
+                   projectFiles="true">
+      <logicalFolder name="f1" displayName="common" projectFiles="true">
+        <itemPath>SetpointLib.c</itemPath>
+        <itemPath>SocketLib.c</itemPath>
+        <itemPath>WheelHMI.c</itemPath>
+      </logicalFolder>
+      <logicalFolder name="f2" displayName="real" projectFiles="true">
+        <itemPath>real/Analog.c</itemPath>
+        <itemPath>real/Encoder.c</itemPath>
+        <itemPath>real/Gyroscope.c</itemPath>
+        <itemPath>real/HardwareLib.c</itemPath>
+        <itemPath>real/Motor.c</itemPath>
+      </logicalFolder>
+      <logicalFolder name="f3" displayName="virtual" projectFiles="true">
+        <itemPath>virtual/HardwareLibSim.c</itemPath>
+        <itemPath>virtual/dModel.c</itemPath>
+        <itemPath>virtual/discreteModel.c</itemPath>
+      </logicalFolder>
+      <itemPath>WheelLaws.c</itemPath>
+      <itemPath>WheelTasks.c</itemPath>
+    </logicalFolder>
+    <logicalFolder name="ExternalFiles"
+                   displayName="Important Files"
+                   projectFiles="false"
+                   kind="IMPORTANT_FILES_FOLDER">
+      <itemPath>Makefile</itemPath>
+    </logicalFolder>
+  </logicalFolder>
+  <projectmakefile>Makefile</projectmakefile>
+  <confs>
+    <conf name="RealTarget" type="1" platformSpecific="true">
+      <toolsSet>
+        <compilerSet>default</compilerSet>
+        <platform>2</platform>
+        <dependencyChecking>true</dependencyChecking>
+        <rebuildPropChanged>true</rebuildPropChanged>
+      </toolsSet>
+      <compileType>
+        <cTool>
+          <developmentMode>0</developmentMode>
+          <incDir>
+            <pElem>.</pElem>
+            <pElem>real</pElem>
+          </incDir>
+          <commandLine>$(XENOCFLAGS)</commandLine>
+        </cTool>
+        <ccTool>
+          <developmentMode>0</developmentMode>
+        </ccTool>
+        <fortranCompilerTool>
+          <developmentMode>0</developmentMode>
+        </fortranCompilerTool>
+        <asmTool>
+          <developmentMode>0</developmentMode>
+        </asmTool>
+        <linkerTool>
+          <linkerLibItems>
+            <linkerLibStdlibItem>Mathematics</linkerLibStdlibItem>
+          </linkerLibItems>
+          <commandLine>$(XENOLDFLAGS)</commandLine>
+        </linkerTool>
+      </compileType>
+      <item path="HardwareLib.h" ex="false" tool="3" flavor2="0">
+      </item>
+      <item path="ReactionWheel.h" ex="false" tool="3" flavor2="0">
+      </item>
+      <item path="SetpointLib.c" ex="false" tool="0" flavor2="0">
+      </item>
+      <item path="SocketLib.c" ex="false" tool="0" flavor2="0">
+      </item>
+      <item path="SocketLib.h" ex="false" tool="3" flavor2="0">
+      </item>
+      <item path="WheelHMI.c" ex="false" tool="0" flavor2="0">
+      </item>
+      <item path="WheelLaws.c" ex="false" tool="0" flavor2="0">
+      </item>
+      <item path="WheelTasks.c" ex="false" tool="0" flavor2="0">
+      </item>
+      <item path="real/Analog.c" ex="false" tool="0" flavor2="0">
+      </item>
+      <item path="real/Encoder.c" ex="false" tool="0" flavor2="0">
+      </item>
+      <item path="real/Gyroscope.c" ex="false" tool="0" flavor2="0">
+      </item>
+      <item path="real/HardwareLib.c" ex="false" tool="0" flavor2="0">
+      </item>
+      <item path="real/Motor.c" ex="false" tool="0" flavor2="0">
+      </item>
+    </conf>
+    <conf name="VirtualTarget" type="1" platformSpecific="true">
+      <toolsSet>
+        <compilerSet>default</compilerSet>
+        <platform>2</platform>
+        <dependencyChecking>true</dependencyChecking>
+        <rebuildPropChanged>true</rebuildPropChanged>
+      </toolsSet>
+      <compileType>
+        <cTool>
+          <developmentMode>0</developmentMode>
+          <incDir>
+            <pElem>.</pElem>
+            <pElem>virtual</pElem>
+          </incDir>
+          <commandLine>$(XENOCFLAGS)</commandLine>
+        </cTool>
+        <ccTool>
+          <developmentMode>0</developmentMode>
+        </ccTool>
+        <fortranCompilerTool>
+          <developmentMode>0</developmentMode>
+        </fortranCompilerTool>
+        <asmTool>
+          <developmentMode>0</developmentMode>
+        </asmTool>
+        <linkerTool>
+          <linkerLibItems>
+            <linkerLibStdlibItem>Mathematics</linkerLibStdlibItem>
+          </linkerLibItems>
+          <commandLine>$(XENOLDFLAGS)</commandLine>
+        </linkerTool>
+      </compileType>
+      <item path="HardwareLib.h" ex="false" tool="3" flavor2="0">
+      </item>
+      <item path="ReactionWheel.h" ex="false" tool="3" flavor2="0">
+      </item>
+      <item path="SetpointLib.c" ex="false" tool="0" flavor2="0">
+      </item>
+      <item path="SocketLib.c" ex="false" tool="0" flavor2="0">
+      </item>
+      <item path="SocketLib.h" ex="false" tool="3" flavor2="0">
+      </item>
+      <item path="WheelHMI.c" ex="false" tool="0" flavor2="0">
+      </item>
+      <item path="WheelLaws.c" ex="false" tool="0" flavor2="0">
+      </item>
+      <item path="WheelTasks.c" ex="false" tool="0" flavor2="9">
+      </item>
+      <item path="virtual/HardwareLibSim.c" ex="false" tool="0" flavor2="0">
+      </item>
+      <item path="virtual/dModel.c" ex="false" tool="0" flavor2="0">
+      </item>
+      <item path="virtual/discreteModel.c" ex="false" tool="0" flavor2="0">
+      </item>
+    </conf>
+  </confs>
+</configurationDescriptor>
