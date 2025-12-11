@@ -18,6 +18,7 @@
 #define HUMAN_MACHINE_INTERFACE_PRIORITY     33
 #define TIME_MANAGEMENT_PRIORITY             35
 #define MANAGE_LAW_ACQUIRE_PRIORITY          37
+#define TIME_MANAGEMENT_PERIOD_NS            1000000  // 1ms in nanoseconds
 //********   This space must be completed if needed *****  
 
 //--------------------------------------------
@@ -109,7 +110,7 @@ void TimeManagement_Task()
     rt_printf("Starting Time Management task\r\n");
 
     // Set task periodic at 1ms
-    rt_task_set_periodic(NULL, TM_NOW, 1000000); // 1ms in nanoseconds
+    rt_task_set_periodic(NULL, TM_NOW, TIME_MANAGEMENT_PERIOD_NS);
 
     while(1) {
         rt_task_wait_period(NULL);
@@ -137,7 +138,7 @@ void ManageLawAcquire_Task()
     bool first_iteration = true;
 
     // Set task periodic with lawPeriod
-    rt_task_set_periodic(NULL, TM_NOW, ExperimentParameters.lawPeriod * 1000000);
+    rt_task_set_periodic(NULL, TM_NOW, (unsigned long long)ExperimentParameters.lawPeriod * 1000000ULL);
 
     while(1) {
         rt_task_wait_period(NULL);
