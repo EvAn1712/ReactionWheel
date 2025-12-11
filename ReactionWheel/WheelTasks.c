@@ -116,7 +116,7 @@ void TimeManagement_Task()
         rt_task_wait_period(NULL);
 
         if(experimentRunning) {
-            // Update elapsed time
+            // Update elapsed time (single writer, volatile ensures visibility to readers)
             ExperimentElapsedMs++;
 
             // Check for experiment duration timeout
@@ -145,9 +145,15 @@ void ManageLawAcquire_Task()
             periodic_set = true;
         }
         
-        if(periodic_set) {
+        if(periodic_set && experimentRunning) {
             rt_task_wait_period(NULL);
         } else {
+            // When not in periodic mode, sleep briefly
+            if(periodic_set && !experimentRunning) {
+                // Stop periodic mode
+                rt_task_set_mode(0, T_PRIMARY, NULL);
+                periodic_set = false;
+            }
             rt_task_sleep(10000000); // 10ms sleep while waiting for experiment to start
         }
         
@@ -177,7 +183,6 @@ void ManageLawAcquire_Task()
             rt_queue_write(&SensorData_Queue, &msg, sizeof(SensorMessage), Q_NORMAL);
         } else {
             first_iteration = true;
-            periodic_set = false;
         }
     }
 }
