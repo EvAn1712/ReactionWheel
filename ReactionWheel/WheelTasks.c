@@ -46,6 +46,9 @@ RT_SEM ExitApplication_Semaphore; //finished
 
 RT_EVENT ExperimentControl_Event;
 
+#ifndef BIT
+#define BIT(n) (1<<n)
+#endif
 #define EVENT_START    BIT(0)
 #define EVENT_ABORT    BIT(1)
 #define EVENT_FINISHED BIT(2)  
