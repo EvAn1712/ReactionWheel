@@ -18,6 +18,7 @@
 #define HUMAN_MACHINE_INTERFACE_PRIORITY     33
 #define TIME_MANAGEMENT_PRIORITY             35
 #define MANAGE_LAW_ACQUIRE_PRIORITY          37
+#define TIME_MANAGEMENT_PERIOD_NS            1000000  // 1ms in nanoseconds
 //********   This space must be completed if needed *****  
 
 //--------------------------------------------
@@ -44,12 +45,14 @@ RT_SEM ExitApplication_Semaphore; //finished
 //--------------------------------------------
 // https://gitlab-pages.isae-supaero.fr/l.alloza/doc-xenomai3/group__alchemy__event.html
 
-//#define BIT(n) (1<<n)
-//#define EVENT_1    BIT(0)
-//#define EVENT_2    BIT(1)
-//#define EVENT_ALL (EVENT_1 | EVENT_2)
+RT_EVENT ExperimentControl_Event;
 
-//********   This space must be completed if needed *****  
+#ifndef BIT
+#define BIT(n) (1<<n)
+#endif
+#define EVENT_START    BIT(0)
+#define EVENT_ABORT    BIT(1)
+#define EVENT_FINISHED BIT(2)  
 
 //--------------------------------------------
 // Mutual exclusion semaphores descriptors    
@@ -106,31 +109,23 @@ void TimeManagement_Task()
 {
     rt_printf("Starting Time Management task\r\n");
 
-    struct timespec start, now;
+    // Set task periodic at 1ms
+    rt_task_set_periodic(NULL, TM_NOW, TIME_MANAGEMENT_PERIOD_NS);
 
     while(1) {
-        // Attendre le démarrage d'une expérience
-        rt_sem_p(&StartExperiment_Semaphore, TM_INFINITE);
+        rt_task_wait_period(NULL);
 
-        clock_gettime(CLOCK_MONOTONIC, &start);
-        experimentRunning = true;
-        ExperimentElapsedMs = 0;
+        if(experimentRunning) {
+            // Update elapsed time (single writer, volatile ensures visibility to readers)
+            ExperimentElapsedMs++;
 
-        while(experimentRunning) {
-            clock_gettime(CLOCK_MONOTONIC, &now);
-            ExperimentElapsedMs = (unsigned long)(now.tv_sec - start.tv_sec) * 1000UL
-                                + (now.tv_nsec - start.tv_nsec) / 1000000UL;
-
-            // Vérifier si durée max atteinte
+            // Check for experiment duration timeout
             if(ExperimentElapsedMs >= ExperimentParameters.duration * 1000) {
                 experimentRunning = false;
+                rt_event_signal(&ExperimentControl_Event, EVENT_FINISHED);
                 rt_sem_v(&ExitApplication_Semaphore);
             }
-
-            rt_task_sleep(1000000); // 1ms
-            
         }
-        
     }
 }
 
@@ -140,11 +135,45 @@ void ManageLawAcquire_Task()
 
     SampleType sample;
     SensorMessage msg;
+    bool first_iteration = true;
+    bool periodic_set = false;
 
     while(1) {
+        // Set task periodic with lawPeriod once experiment starts
+        if(experimentRunning && !periodic_set) {
+            rt_task_set_periodic(NULL, TM_NOW, (unsigned long long)ExperimentParameters.lawPeriod * 1000000ULL);
+            periodic_set = true;
+        }
+        
+        if(periodic_set && experimentRunning) {
+            rt_task_wait_period(NULL);
+        } else {
+            // When not in periodic mode, sleep briefly
+            if(periodic_set && !experimentRunning) {
+                // Stop periodic mode
+                rt_task_set_mode(0, T_PRIMARY, NULL);
+                periodic_set = false;
+            }
+            rt_task_sleep(10000000); // 10ms sleep while waiting for experiment to start
+        }
+        
         if(experimentRunning) {
+            // 1. Acquire sensor data
             SampleAcquisition(&sample);
 
+            // 2. On first iteration: Initialize experiment
+            if (first_iteration) {
+                InitializeExperiment(sample);
+                first_iteration = false;
+            }
+
+            // 3. Compute control law
+            float command = ComputeLaw(sample);
+
+            // 4. Apply command to motor
+            ApplySetpointCurrent(command);
+
+            // 5. Store data in queue for HMI
             msg.motorSpeed = sample.motorSpeed;
             msg.platformSpeed = sample.platformSpeed;
             msg.platformPosition = sample.platformPosition;
@@ -152,10 +181,8 @@ void ManageLawAcquire_Task()
             msg.timestamp = ExperimentElapsedMs;
             
             rt_queue_write(&SensorData_Queue, &msg, sizeof(SensorMessage), Q_NORMAL);
-
-            rt_task_sleep(100000000); // 100ms
         } else {
-            rt_task_sleep(500000000); // 500ms en attente
+            first_iteration = true;
         }
     }
 }
@@ -169,9 +196,20 @@ void ManageLawAcquire_Task()
 void AbortExperiment(void)
 {
     rt_printf("Aborted\r\n");
-    rt_sem_create(&ExitApplication_Semaphore, "Exit", 0, S_FIFO);
-    Motor_terminate();
+    
+    // Set experiment running flag to false
     experimentRunning = false;
+    
+    // Signal abort event
+    rt_event_signal(&ExperimentControl_Event, EVENT_ABORT);
+    
+    // Stop motor
+    ApplySetpointCurrent(0.0f);
+    
+    // Clear queue
+    rt_queue_flush(&SensorData_Queue);
+    
+    // Send 'F' termination character
     float emptyBlock[1] = {0.0f};
     WriteRealArray('F', emptyBlock, 1);
 }
@@ -179,35 +217,21 @@ void AbortExperiment(void)
 void StartExperiment(void)
 {
     rt_printf("Started\r\n");
-    rt_sem_v(&StartExperiment_Semaphore); // Débloquer la tâche TimeManagement
+    
+    // Set experiment running flag
+    experimentRunning = true;
+    
+    // Reset elapsed time
+    ExperimentElapsedMs = 0;
+    
+    // Clear the sensor queue
+    rt_queue_flush(&SensorData_Queue);
+    
+    // Signal start event
+    rt_event_signal(&ExperimentControl_Event, EVENT_START);
 }
 
 //----------------------------------------------------------
-
-void TimeManagement()
-{
-
-    static volatile unsigned long ExperimentElapsedMs = 0;
-    static struct timespec start = {0,0};
-    struct timespec now;
-    
-    if(ExperimentElapsedMs){
-        if(start.tv_sec == 0 && start.tv_nsec == 0){
-            clock_gettime(CLOCK_MONOTONIC, &start);
-            ExperimentElapsedMs= 0;
-            
-        }else {
-            clock_gettime(CLOCK_MONOTONIC, &now);
-            ExperimentElapsedMs = (unsigned long)(now.tv_sec - start.tv_sec) * 1000UL + (now.tv_nsec- start.tv_nsec)/1000000UL;
-        }  
-     } else {
-        start.tv_sec = start.tv_nsec = 0;
-        ExperimentElapsedMs = 0;
-    }
-    (void)ExperimentElapsedMs;
-}
-
-
 
 void ReturnSensorsMeasurement()
 {
@@ -270,8 +294,7 @@ int main(int argc, char* argv[])
 
     // ------------------------------------- 
     // Events creation               
-    // rt_event_create(...);
-    // *** This space must be completed  if needed   *****
+    rt_event_create(&ExperimentControl_Event, "ExperimentControl", 0, EV_FIFO);
     
     // Message queues creation               
     // ------------------------------------- 
@@ -333,8 +356,7 @@ int main(int argc, char* argv[])
     //------------------------------------------------------------
     // Events destruction                                 
     //------------------------------------------------------------
-    // rt_event_delete(...);                                 
-    // **** This space must be completed  if needed   *****
+    rt_event_delete(&ExperimentControl_Event);
    
     
     //------------------------------------------------------------
