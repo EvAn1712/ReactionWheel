@@ -136,12 +136,20 @@ void ManageLawAcquire_Task()
     SampleType sample;
     SensorMessage msg;
     bool first_iteration = true;
-
-    // Set task periodic with lawPeriod
-    rt_task_set_periodic(NULL, TM_NOW, (unsigned long long)ExperimentParameters.lawPeriod * 1000000ULL);
+    bool periodic_set = false;
 
     while(1) {
-        rt_task_wait_period(NULL);
+        // Set task periodic with lawPeriod once experiment starts
+        if(experimentRunning && !periodic_set) {
+            rt_task_set_periodic(NULL, TM_NOW, (unsigned long long)ExperimentParameters.lawPeriod * 1000000ULL);
+            periodic_set = true;
+        }
+        
+        if(periodic_set) {
+            rt_task_wait_period(NULL);
+        } else {
+            rt_task_sleep(10000000); // 10ms sleep while waiting for experiment to start
+        }
         
         if(experimentRunning) {
             // 1. Acquire sensor data
@@ -169,6 +177,7 @@ void ManageLawAcquire_Task()
             rt_queue_write(&SensorData_Queue, &msg, sizeof(SensorMessage), Q_NORMAL);
         } else {
             first_iteration = true;
+            periodic_set = false;
         }
     }
 }
@@ -218,31 +227,6 @@ void StartExperiment(void)
 }
 
 //----------------------------------------------------------
-
-void TimeManagement()
-{
-
-    static volatile unsigned long ExperimentElapsedMs = 0;
-    static struct timespec start = {0,0};
-    struct timespec now;
-    
-    if(ExperimentElapsedMs){
-        if(start.tv_sec == 0 && start.tv_nsec == 0){
-            clock_gettime(CLOCK_MONOTONIC, &start);
-            ExperimentElapsedMs= 0;
-            
-        }else {
-            clock_gettime(CLOCK_MONOTONIC, &now);
-            ExperimentElapsedMs = (unsigned long)(now.tv_sec - start.tv_sec) * 1000UL + (now.tv_nsec- start.tv_nsec)/1000000UL;
-        }  
-     } else {
-        start.tv_sec = start.tv_nsec = 0;
-        ExperimentElapsedMs = 0;
-    }
-    (void)ExperimentElapsedMs;
-}
-
-
 
 void ReturnSensorsMeasurement()
 {
