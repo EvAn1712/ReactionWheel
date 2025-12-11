@@ -151,7 +151,6 @@ void ManageLawAcquire_Task()
             // When not in periodic mode, sleep briefly
             if(periodic_set && !experimentRunning) {
                 // Stop periodic mode
-                rt_task_set_mode(0, T_PRIMARY, NULL);
                 periodic_set = false;
             }
             rt_task_sleep(10000000); // 10ms sleep while waiting for experiment to start
@@ -205,6 +204,7 @@ void AbortExperiment(void)
     
     // Stop motor
     ApplySetpointCurrent(0.0f);
+    Motor_terminate();
     
     // Clear queue
     rt_queue_flush(&SensorData_Queue);
