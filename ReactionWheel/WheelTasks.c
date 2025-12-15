@@ -17,7 +17,8 @@
 
 #define HUMAN_MACHINE_INTERFACE_PRIORITY     33
 #define TIME_MANAGEMENT_PRIORITY             35
-#define MANAGE_LAW_ACQUIRE_PRIORITY          37
+#define ACQUISITION_PRIORITY                 37
+#define CONTROL_LAW_PRIORITY                 39
 #define TIME_MANAGEMENT_PERIOD_NS            1000000  // 1ms in nanoseconds
 //********   This space must be completed if needed *****  
 
@@ -27,7 +28,8 @@
 // https://gitlab-pages.isae-supaero.fr/l.alloza/doc-xenomai3/group__alchemy__task.html
 
 RT_TASK HumanMachineInterface_TaskDescriptor;
-RT_TASK ManageLawAcquire_TaskDescriptor;
+RT_TASK Acquisition_TaskDescriptor;
+RT_TASK ControlLaw_TaskDescriptor;
 RT_TASK TimeManagement_TaskDescriptor;
 RT_TASK ManageRequest_TaskDescriptor;
 
@@ -86,8 +88,6 @@ typedef struct {
 //--------------------------------------------------------------------------
 // bool myFlag
 volatile bool experimentRunning = false;
-volatile bool Acquisition = false;
-volatile bool Law = false;
 volatile unsigned long ExperimentElapsedMs = 0;
 //**** This space must be completed if needed *****  
 
@@ -137,35 +137,22 @@ void TimeManagement_Task()
                 float emptyBlock[1] = {0.0};
                 WriteRealArray('F', emptyBlock, 1);
             }
-            
-            if (ExperimentElapsedMs%ExperimentParameters.acquisitionPeriod == 0){
-                Acquisition = true;
-            } else  {
-                Acquisition = false;
-            }
-
-            if (ExperimentElapsedMs%ExperimentParameters.lawPeriod == 0){
-                Law = true;
-            } else {
-                Law = false;
-            }
         }
     }
 }
 
-void ManageLawAcquire_Task()
+void Acquisition_Task()
 {
-    rt_printf("Starting Manage Law Acquire task\r\n");
+    rt_printf("Starting Acquisition task\r\n");
 
     SampleType sample;
     SensorMessage msg;
-    bool first_iteration = true;
     bool periodic_set = false;
 
     while(1) {
-        // Set task periodic with lawPeriod once experiment starts
+        // Set task periodic with acquisitionPeriod once experiment starts
         if(experimentRunning && !periodic_set) {
-            rt_task_set_periodic(NULL, TM_NOW, (unsigned long long)ExperimentParameters.lawPeriod * 1000);
+            rt_task_set_periodic(NULL, TM_NOW, (unsigned long long)ExperimentParameters.acquisitionPeriod * 1000000);
             periodic_set = true;
         }
         
@@ -180,35 +167,63 @@ void ManageLawAcquire_Task()
             rt_task_sleep(10000000); // 10ms sleep while waiting for experiment to start
         }
         
+        if(experimentRunning) {
+            // Acquire sensor data
+            SampleAcquisition(&sample);
+            
+            // Prepare message with timestamp
+            msg.motorSpeed = sample.motorSpeed;
+            msg.platformSpeed = sample.platformSpeed;
+            msg.platformPosition = sample.platformPosition;
+            msg.motorCurrent = sample.motorCurrent;
+            msg.timestamp = ExperimentElapsedMs;
+            
+            // Send to queue for storage/transmission
+            rt_queue_write(&SensorData_Queue, &msg, sizeof(SensorMessage), Q_NORMAL);
+        }
+    }
+}
+
+void ControlLaw_Task()
+{
+    rt_printf("Starting Control Law task\r\n");
+
+    SampleType sample;
+    bool first_iteration = true;
+    bool periodic_set = false;
+
+    while(1) {
+        // Set task periodic with lawPeriod once experiment starts
+        if(experimentRunning && !periodic_set) {
+            rt_task_set_periodic(NULL, TM_NOW, (unsigned long long)ExperimentParameters.lawPeriod * 1000000);
+            periodic_set = true;
+        }
+        
+        if(periodic_set && experimentRunning) {
+            rt_task_wait_period(NULL);
+        } else {
+            // When not in periodic mode, sleep briefly
+            if(periodic_set && !experimentRunning) {
+                // Stop periodic mode
+                periodic_set = false;
+            }
+            rt_task_sleep(10000000); // 10ms sleep while waiting for experiment to start
+        }
         
         if(experimentRunning) {
-                //rt_printf("Experiment Running manageLaw\r\n");
-                SampleAcquisition(&sample);
-
-                if (first_iteration) {
-                    InitializeExperiment(sample);
-                    first_iteration = false;
-                }
-
-                //SensorMessage data;
-                //rt_queue_read(&SensorData_Queue,&data, sizeof(SensorMessage), TM_INFINITE)
-                //float command = ComputeLaw(data);
-                float command = ComputeLaw(sample);
-
-                ApplySetpointCurrent(command);
-
-            if (Acquisition) {
-                msg.motorSpeed = sample.motorSpeed;
-                msg.platformSpeed = sample.platformSpeed;
-                msg.platformPosition = sample.platformPosition;
-                msg.motorCurrent = sample.motorCurrent;
-                msg.timestamp = ExperimentElapsedMs;
-
-                rt_queue_write(&SensorData_Queue, &msg, sizeof(SensorMessage), Q_NORMAL);
+            // Acquire current sensor values for control law computation
+            SampleAcquisition(&sample);
+            
+            if (first_iteration) {
+                InitializeExperiment(sample);
+                first_iteration = false;
             }
+            
+            // Compute and apply control law
+            float command = ComputeLaw(sample);
+            ApplySetpointCurrent(command);
         } else {
             first_iteration = true;
-            //rt_printf("Else not experiment Running manageLaw\r\n");
             ApplySetpointCurrent(0.0);   
         }
     }
@@ -345,14 +360,16 @@ int main(int argc, char* argv[])
     //---------------------------------------------------------
     rt_task_create(&HumanMachineInterface_TaskDescriptor, "ReturnSensorsMeasurementestTask", DEFAULTSTACKSIZE, HUMAN_MACHINE_INTERFACE_PRIORITY, 0);
     rt_task_create(&TimeManagement_TaskDescriptor, "TimeManagementTask", DEFAULTSTACKSIZE, TIME_MANAGEMENT_PRIORITY, 0);
-    rt_task_create(&ManageLawAcquire_TaskDescriptor, "ManageLawAcquireTask", DEFAULTSTACKSIZE, MANAGE_LAW_ACQUIRE_PRIORITY, 0);
+    rt_task_create(&Acquisition_TaskDescriptor, "AcquisitionTask", DEFAULTSTACKSIZE, ACQUISITION_PRIORITY, 0);
+    rt_task_create(&ControlLaw_TaskDescriptor, "ControlLawTask", DEFAULTSTACKSIZE, CONTROL_LAW_PRIORITY, 0);
 
 
 
     // Tasks starting
     rt_task_start(&HumanMachineInterface_TaskDescriptor, &HumanMachineInterface_Task, NULL);
     rt_task_start(&TimeManagement_TaskDescriptor, &TimeManagement_Task, NULL);
-    rt_task_start(&ManageLawAcquire_TaskDescriptor, &ManageLawAcquire_Task, NULL);
+    rt_task_start(&Acquisition_TaskDescriptor, &Acquisition_Task, NULL);
+    rt_task_start(&ControlLaw_TaskDescriptor, &ControlLaw_Task, NULL);
     
 // **** This space must be completed  if needed   ***** 
 
@@ -369,7 +386,8 @@ int main(int argc, char* argv[])
     // **** This space must be completed  if needed   ***** 
     rt_task_delete(&HumanMachineInterface_TaskDescriptor);
     rt_task_delete(&TimeManagement_TaskDescriptor);
-    rt_task_delete(&ManageLawAcquire_TaskDescriptor);
+    rt_task_delete(&Acquisition_TaskDescriptor);
+    rt_task_delete(&ControlLaw_TaskDescriptor);
     //------------------------------------------------------------
     // Semaphores destruction                                     
     //-------------------------------------------------------------
