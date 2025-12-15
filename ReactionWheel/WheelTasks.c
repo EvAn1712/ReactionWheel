@@ -158,6 +158,13 @@ void Acquisition_Task()
         
         if(periodic_set && experimentRunning) {
             rt_task_wait_period(NULL);
+            
+            // Check again after waking up in case abort occurred during wait
+            if(!experimentRunning) {
+                // Stop periodic mode immediately
+                periodic_set = false;
+                continue;
+            }
         } else {
             // When not in periodic mode, sleep briefly
             if(periodic_set && !experimentRunning) {
@@ -201,11 +208,22 @@ void ControlLaw_Task()
         
         if(periodic_set && experimentRunning) {
             rt_task_wait_period(NULL);
+            
+            // Check again after waking up in case abort occurred during wait
+            if(!experimentRunning) {
+                // Stop periodic mode and apply zero current immediately
+                periodic_set = false;
+                first_iteration = true;
+                ApplySetpointCurrent(0.0);
+                continue;
+            }
         } else {
             // When not in periodic mode, sleep briefly
             if(periodic_set && !experimentRunning) {
                 // Stop periodic mode
                 periodic_set = false;
+                first_iteration = true;
+                ApplySetpointCurrent(0.0);
             }
             rt_task_sleep(10000000); // 10ms sleep while waiting for experiment to start
         }
