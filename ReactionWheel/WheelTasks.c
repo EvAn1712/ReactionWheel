@@ -151,6 +151,7 @@ void Acquisition_Task()
     SampleType sample;
     SensorMessage msg;
     bool periodic_set = false;
+    unsigned long long acquisitionPeriodNs = 0;
 
     while(1) {
         // Check if experiment is running
@@ -160,8 +161,9 @@ void Acquisition_Task()
         
         // Set task periodic with acquisitionPeriod once experiment starts
         if(running && !periodic_set) {
-            // Convert milliseconds to nanoseconds
-            rt_task_set_periodic(NULL, TM_NOW, (unsigned long long)ExperimentParameters.acquisitionPeriod * 1000000);
+            // Convert milliseconds to nanoseconds (calculated once)
+            acquisitionPeriodNs = (unsigned long long)ExperimentParameters.acquisitionPeriod * 1000000;
+            rt_task_set_periodic(NULL, TM_NOW, acquisitionPeriodNs);
             periodic_set = true;
         }
         
@@ -197,6 +199,7 @@ void ControlLaw_Task()
 
     SampleType sample;
     bool periodic_set = false;
+    unsigned long long lawPeriodNs = 0;
 
     while(1) {
         // Check if experiment is running
@@ -206,8 +209,9 @@ void ControlLaw_Task()
         
         // Set task periodic with lawPeriod once experiment starts
         if(running && !periodic_set) {
-            // Convert milliseconds to nanoseconds
-            rt_task_set_periodic(NULL, TM_NOW, (unsigned long long)ExperimentParameters.lawPeriod * 1000000);
+            // Convert milliseconds to nanoseconds (calculated once)
+            lawPeriodNs = (unsigned long long)ExperimentParameters.lawPeriod * 1000000;
+            rt_task_set_periodic(NULL, TM_NOW, lawPeriodNs);
             periodic_set = true;
         }
         
@@ -215,6 +219,10 @@ void ControlLaw_Task()
             rt_task_wait_period(NULL);
             
             // Acquire current sensor data for control law computation
+            // Note: We acquire directly rather than reading from queue because:
+            // 1. Control law needs the most current sensor data for stability
+            // 2. Queue data may be stale if lawPeriod != acquisitionPeriod
+            // 3. The queue is primarily for data logging/HMI communication
             SampleAcquisition(&sample);
             
             // Compute control law
