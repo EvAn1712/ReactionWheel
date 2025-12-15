@@ -178,22 +178,25 @@ void ManageLawAcquire_Task()
             rt_task_sleep(10000000); // 10ms sleep while waiting for experiment to start
         }
         
-        rt_event_wait(&ExperimentControl_Event,EVENT_LP | EVENT_AP | EVENT_START| EVENT_ABORT | EVENT_FINISHED, &maskValue, EV_ALL, TM_INFINITE);
+        rt_event_wait(&ExperimentControl_Event,EVENT_LP | EVENT_AP | EVENT_START| EVENT_ABORT | EVENT_FINISHED, &maskValue, EV_ANY, TM_INFINITE);
           
         rt_printf("%d",maskValue);
          
         if (maskValue & EVENT_AP) {
+            rt_printf("AP EVENT");
             SampleAcquisition(&sample);
             rt_event_clear(&ExperimentControl_Event, EVENT_AP, NULL);
             rt_queue_write(&SensorData_Queue, &msg, sizeof(SampleType), Q_NORMAL);
         }
         
         if (maskValue & EVENT_LP) {
+            rt_printf("LP EVENT");
             ApplySetpointCurrent(ComputeLaw(sample));
             rt_event_clear(&ExperimentControl_Event, EVENT_LP, NULL);
         }
         
         if (maskValue & EVENT_START) {
+            rt_printf("Event started");
             experimentRunning = true ;
             SampleAcquisition(&sample);
             InitializeExperiment(sample);
@@ -201,10 +204,10 @@ void ManageLawAcquire_Task()
         }
         
         if (maskValue & EVENT_ABORT || maskValue & EVENT_FINISHED) {
+            rt_printf("Event aborted or finished");
             ApplySetpointCurrent(0.0);
             experimentRunning = false ; 
             rt_event_clear(&ExperimentControl_Event, EVENT_ABORT, NULL);
-            
             rt_event_clear(&ExperimentControl_Event, EVENT_FINISHED, NULL);
         }
         
