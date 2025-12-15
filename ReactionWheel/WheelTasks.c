@@ -53,6 +53,9 @@ RT_EVENT ExperimentControl_Event;
 #define EVENT_START    BIT(0)
 #define EVENT_ABORT    BIT(1)
 #define EVENT_FINISHED BIT(2)  
+#define EVENT_LP    BIT(3)
+#define EVENT_AP    BIT(4)
+#define EVENT_ALL (EVENT_AP | EVENT_LP | EVENT_START | EVENT_ABORT | EVENT_FINISHED)
 
 //--------------------------------------------
 // Mutual exclusion semaphores descriptors    
@@ -86,8 +89,6 @@ typedef struct {
 //--------------------------------------------------------------------------
 // bool myFlag
 volatile bool experimentRunning = false;
-volatile bool Acquisition = false;
-volatile bool Law = false;
 volatile unsigned long ExperimentElapsedMs = 0;
 //**** This space must be completed if needed *****  
 
@@ -118,7 +119,7 @@ void TimeManagement_Task()
         rt_task_wait_period(NULL);
 
         if(experimentRunning) {
-            // Update elapsed time (single writer, volatile ensures visibility to readers)
+            // Update elapsed time 
             ExperimentElapsedMs++;
 
             // Check for experiment duration timeout
@@ -127,7 +128,7 @@ void TimeManagement_Task()
                 rt_printf("Task finished \r\n");
                 
                 experimentRunning = false;
-                rt_event_signal(&ExperimentControl_Event, EVENT_ABORT);
+                rt_event_signal(&ExperimentControl_Event, EVENT_FINISHED);
                 //rt_sem_v(&ExitApplication_Semaphore);
     
                 // Clear queue
@@ -139,16 +140,12 @@ void TimeManagement_Task()
             }
             
             if (ExperimentElapsedMs%ExperimentParameters.acquisitionPeriod == 0){
-                Acquisition = true;
-            } else  {
-                Acquisition = false;
-            }
+                rt_event_signal(&ExperimentControl_Event,EVENT_AP);
+            } 
 
             if (ExperimentElapsedMs%ExperimentParameters.lawPeriod == 0){
-                Law = true;
-            } else {
-                Law = false;
-            }
+               rt_event_signal(&ExperimentControl_Event,EVENT_LP);
+            } 
         }
     }
 }
@@ -159,13 +156,14 @@ void ManageLawAcquire_Task()
 
     SampleType sample;
     SensorMessage msg;
+    unsigned int maskValue;
     bool first_iteration = true;
     bool periodic_set = false;
 
     while(1) {
         // Set task periodic with lawPeriod once experiment starts
         if(experimentRunning && !periodic_set) {
-            rt_task_set_periodic(NULL, TM_NOW, (unsigned long long)ExperimentParameters.lawPeriod * 1000);
+            rt_task_set_periodic(NULL, TM_NOW, (unsigned long long)ExperimentParameters.lawPeriod);
             periodic_set = true;
         }
         
@@ -180,24 +178,53 @@ void ManageLawAcquire_Task()
             rt_task_sleep(10000000); // 10ms sleep while waiting for experiment to start
         }
         
+        rt_event_wait(&ExperimentControl_Event,EVENT_LP | EVENT_AP | EVENT_START| EVENT_ABORT | EVENT_FINISHED, &maskValue, EV_ALL, TM_INFINITE);
+          
+        rt_printf("%d",maskValue);
+         
+        if (maskValue & EVENT_AP) {
+            SampleAcquisition(&sample);
+            rt_event_clear(&ExperimentControl_Event, EVENT_AP, NULL);
+            rt_queue_write(&SensorData_Queue, &msg, sizeof(SampleType), Q_NORMAL);
+        }
         
-        if(experimentRunning) {
-                //rt_printf("Experiment Running manageLaw\r\n");
-                SampleAcquisition(&sample);
-
-                if (first_iteration) {
+        if (maskValue & EVENT_LP) {
+            ApplySetpointCurrent(ComputeLaw(sample));
+            rt_event_clear(&ExperimentControl_Event, EVENT_LP, NULL);
+        }
+        
+        if (maskValue & EVENT_START) {
+            experimentRunning = true ;
+            SampleAcquisition(&sample);
+            InitializeExperiment(sample);
+            rt_event_clear(&ExperimentControl_Event, EVENT_START, NULL);
+        }
+        
+        if (maskValue & EVENT_ABORT || maskValue & EVENT_FINISHED) {
+            ApplySetpointCurrent(0.0);
+            experimentRunning = false ; 
+            rt_event_clear(&ExperimentControl_Event, EVENT_ABORT, NULL);
+            
+            rt_event_clear(&ExperimentControl_Event, EVENT_FINISHED, NULL);
+        }
+        
+    /*    if(experimentRunning) {
+            
+            SampleAcquisition(&sample);
+            if (first_iteration) {
                     InitializeExperiment(sample);
                     first_iteration = false;
                 }
+            
+            if (maskValue & EVENT_LP ){
+                rt_printf("maskValue\r\n"); }
 
-                //SensorMessage data;
-                //rt_queue_read(&SensorData_Queue,&data, sizeof(SensorMessage), TM_INFINITE)
-                //float command = ComputeLaw(data);
                 float command = ComputeLaw(sample);
 
                 ApplySetpointCurrent(command);
+           
 
-            if (Acquisition) {
+            //if (Acquisition) {
                 msg.motorSpeed = sample.motorSpeed;
                 msg.platformSpeed = sample.platformSpeed;
                 msg.platformPosition = sample.platformPosition;
@@ -205,12 +232,12 @@ void ManageLawAcquire_Task()
                 msg.timestamp = ExperimentElapsedMs;
 
                 rt_queue_write(&SensorData_Queue, &msg, sizeof(SensorMessage), Q_NORMAL);
-            }
+            //}
         } else {
             first_iteration = true;
-            //rt_printf("Else not experiment Running manageLaw\r\n");
+            rt_printf("Else not experiment Running manageLaw\r\n");
             ApplySetpointCurrent(0.0);   
-        }
+        }*/
     }
 }
 
@@ -265,10 +292,15 @@ void ReturnSensorsMeasurement()
     float samplesBlock[50 * 4];
     char terminationChar;
     int i;
-    float AP = ExperimentParameters.acquisitionPeriod ;
-    float LP = ExperimentParameters.lawPeriod ;
-    int n = (int)(ExperimentParameters.duration/AP); 
+    float AP = ExperimentParameters.acquisitionPeriod;
+    float LP = ExperimentParameters.lawPeriod;
+    //int n = (int)(AP/ExperimentParameters.duration); 
     //int n = (int)(LP/AP); 
+    int n = 10;
+    //RT_QUEUE_INFO Informations;
+    //rt_queue_inquire(&SensorData_Queue,&Informations);
+
+    //int n = Informations.nmessages;
     
     for(i = 0; i < n; i++) {
         if (rt_queue_read(&SensorData_Queue,&msg, sizeof(SensorMessage), TM_INFINITE) >0) {
