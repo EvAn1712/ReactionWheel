@@ -86,6 +86,8 @@ typedef struct {
 //--------------------------------------------------------------------------
 // bool myFlag
 volatile bool experimentRunning = false;
+volatile bool Acquisition = false;
+volatile bool Law = false;
 volatile unsigned long ExperimentElapsedMs = 0;
 //**** This space must be completed if needed *****  
 
@@ -120,10 +122,32 @@ void TimeManagement_Task()
             ExperimentElapsedMs++;
 
             // Check for experiment duration timeout
-            if(ExperimentElapsedMs >= ExperimentParameters.duration * 1000) {
+            if(ExperimentElapsedMs >= ExperimentParameters.duration) {
+                
+                rt_printf("Task finished \r\n");
+                
                 experimentRunning = false;
-                rt_event_signal(&ExperimentControl_Event, EVENT_FINISHED);
-                rt_sem_v(&ExitApplication_Semaphore);
+                rt_event_signal(&ExperimentControl_Event, EVENT_ABORT);
+                //rt_sem_v(&ExitApplication_Semaphore);
+    
+                // Clear queue
+                rt_queue_flush(&SensorData_Queue);
+
+                // Send 'F' termination character
+                float emptyBlock[1] = {0.0};
+                WriteRealArray('F', emptyBlock, 1);
+            }
+            
+            if (ExperimentElapsedMs%ExperimentParameters.acquisitionPeriod == 0){
+                Acquisition = true;
+            } else  {
+                Acquisition = false;
+            }
+
+            if (ExperimentElapsedMs%ExperimentParameters.lawPeriod == 0){
+                Law = true;
+            } else {
+                Law = false;
             }
         }
     }
@@ -141,7 +165,7 @@ void ManageLawAcquire_Task()
     while(1) {
         // Set task periodic with lawPeriod once experiment starts
         if(experimentRunning && !periodic_set) {
-            rt_task_set_periodic(NULL, TM_NOW, (unsigned long long)ExperimentParameters.lawPeriod * 1000000ULL);
+            rt_task_set_periodic(NULL, TM_NOW, (unsigned long long)ExperimentParameters.lawPeriod * 1000);
             periodic_set = true;
         }
         
@@ -156,32 +180,36 @@ void ManageLawAcquire_Task()
             rt_task_sleep(10000000); // 10ms sleep while waiting for experiment to start
         }
         
+        
         if(experimentRunning) {
-            // 1. Acquire sensor data
-            SampleAcquisition(&sample);
+                //rt_printf("Experiment Running manageLaw\r\n");
+                SampleAcquisition(&sample);
 
-            // 2. On first iteration: Initialize experiment
-            if (first_iteration) {
-                InitializeExperiment(sample);
-                first_iteration = false;
+                if (first_iteration) {
+                    InitializeExperiment(sample);
+                    first_iteration = false;
+                }
+
+                //SensorMessage data;
+                //rt_queue_read(&SensorData_Queue,&data, sizeof(SensorMessage), TM_INFINITE)
+                //float command = ComputeLaw(data);
+                float command = ComputeLaw(sample);
+
+                ApplySetpointCurrent(command);
+
+            if (Acquisition) {
+                msg.motorSpeed = sample.motorSpeed;
+                msg.platformSpeed = sample.platformSpeed;
+                msg.platformPosition = sample.platformPosition;
+                msg.motorCurrent = sample.motorCurrent;
+                msg.timestamp = ExperimentElapsedMs;
+
+                rt_queue_write(&SensorData_Queue, &msg, sizeof(SensorMessage), Q_NORMAL);
             }
-
-            // 3. Compute control law
-            float command = ComputeLaw(sample);
-
-            // 4. Apply command to motor
-            ApplySetpointCurrent(command);
-
-            // 5. Store data in queue for HMI
-            msg.motorSpeed = sample.motorSpeed;
-            msg.platformSpeed = sample.platformSpeed;
-            msg.platformPosition = sample.platformPosition;
-            msg.motorCurrent = sample.motorCurrent;
-            msg.timestamp = ExperimentElapsedMs;
-            
-            rt_queue_write(&SensorData_Queue, &msg, sizeof(SensorMessage), Q_NORMAL);
         } else {
             first_iteration = true;
+            //rt_printf("Else not experiment Running manageLaw\r\n");
+            ApplySetpointCurrent(0.0);   
         }
     }
 }
@@ -202,15 +230,11 @@ void AbortExperiment(void)
     // Signal abort event
     rt_event_signal(&ExperimentControl_Event, EVENT_ABORT);
     
-    // Stop motor
-    ApplySetpointCurrent(0.0f);
-    Motor_terminate();
-    
     // Clear queue
     rt_queue_flush(&SensorData_Queue);
     
     // Send 'F' termination character
-    float emptyBlock[1] = {0.0f};
+    float emptyBlock[1] = {0.0};
     WriteRealArray('F', emptyBlock, 1);
 }
 
@@ -243,7 +267,8 @@ void ReturnSensorsMeasurement()
     int i;
     float AP = ExperimentParameters.acquisitionPeriod ;
     float LP = ExperimentParameters.lawPeriod ;
-    int n = (int)(LP/AP); 
+    int n = (int)(ExperimentParameters.duration/AP); 
+    //int n = (int)(LP/AP); 
     
     for(i = 0; i < n; i++) {
         if (rt_queue_read(&SensorData_Queue,&msg, sizeof(SensorMessage), TM_INFINITE) >0) {
