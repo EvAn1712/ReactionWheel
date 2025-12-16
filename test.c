@@ -27,10 +27,8 @@
 // https://gitlab-pages.isae-supaero.fr/l.alloza/doc-xenomai3/group__alchemy__task.html
 
 RT_TASK HumanMachineInterface_TaskDescriptor;
-RT_TASK Acquisition_TaskDescriptor;
-RT_TASK ControlLaw_TaskDescriptor;
 RT_TASK TimeManagement_TaskDescriptor;
-RT_TASK ManageRequest_TaskDescriptor;
+RT_TASK ManageLawAndCurves_TaskDescriptor;
 
 //-------------------------------------------
 //  Semaphores descriptors                   
@@ -51,12 +49,11 @@ RT_EVENT ExperimentControl_Event;
 #ifndef BIT
 #define BIT(n) (1<<n)
 #endif
-#define EVENT_START    BIT(0)
-#define EVENT_ABORT    BIT(1)
-#define EVENT_FINISHED BIT(2)  
-#define EVENT_LP    BIT(3)
-#define EVENT_AP    BIT(4)
-#define EVENT_ALL (EVENT_AP | EVENT_LP | EVENT_START | EVENT_ABORT | EVENT_FINISHED)
+#define EVENT_INITIALIZE    BIT(0)
+#define EVENT_COMPUTELAW    BIT(1)
+#define EVENT_READSENSORS   BIT(2)
+#define EVENT_FINISH        BIT(3)
+#define EVENT_ALL (EVENT_INITIALIZE | EVENT_COMPUTELAW | EVENT_READSENSORS | EVENT_FINISH)
 
 //--------------------------------------------
 // Mutual exclusion semaphores descriptors    
@@ -88,11 +85,8 @@ typedef struct {
 //--------------------------------------------------------------------------
 // Global variables communication and synchronization tasks by shared memory 
 //--------------------------------------------------------------------------
-// bool myFlag
-volatile bool experimentRunning = false;
-volatile unsigned long ExperimentElapsedMs = 0;
-volatile unsigned long lawTickCount = 0;
-volatile unsigned long acquisitionTickCount = 0;
+volatile bool ExperimentFinished_Flag = false;
+volatile bool AbortExperiment_Flag = false;
 //**** This space must be completed if needed *****  
 
 
@@ -113,111 +107,71 @@ void HumanMachineInterface_Task()
 void TimeManagement_Task()
 {
     rt_printf("Starting Time Management task\r\n");
-
-
-    while(1) {
-        rt_task_wait_period(NULL);
-
-        if(experimentRunning == true){
-            if(ConnectionIsActive()){
-                ExperimentElapsedMs++;
-                lawTickCount++;
-                acquisitionTickCount++;
-
-                if(ExperimentElapsedMs >= ExperimentParameters.duration){
-                    rt_event_signal(&ExperimentControl_Event, EVENT_FINISHED);
-                    experimentRunning = false;
-                }
-                if(lawTickCount >= ExperimentParameters.lawPeriod){
-                    rt_event_signal(&ExperimentControl_Event, EVENT_LP);
-                    lawTickCount = 0;
-                }
-                if (acquisitionTickCount >= ExperimentParameters.acquisitionPeriod){
-                    rt_event_signal(&ExperimentControl_Event, EVENT_AP);
-                    acquisitionTickCount = 0;
-                }
+    int experimentTime;
+    rt_task_set_periodic(NULL, TM_NOW, TIME_MANAGEMENT_PERIOD_NS);
+    
+    while(true) {
+        rt_sem_p(&StartExperiment_Semaphore, TM_INFINITE);
+        
+        rt_event_signal(&ExperimentControl_Event, EVENT_INITIALIZE);
+        experimentTime = 0;
+        AbortExperiment_Flag = false;
+        ExperimentFinished_Flag = false;
+        
+        while((experimentTime < ExperimentParameters.duration) && 
+              (AbortExperiment_Flag == false) && 
+              (ConnectionIsActive() == true)) {
+            rt_task_wait_period(NULL);
+            experimentTime++;
+            
+            if((experimentTime % ExperimentParameters.lawPeriod) == 0) {
+                rt_event_signal(&ExperimentControl_Event, EVENT_COMPUTELAW);
+            }
+            if((experimentTime % ExperimentParameters.acquisitionPeriod) == 0) {
+                rt_event_signal(&ExperimentControl_Event, EVENT_READSENSORS);
             }
         }
+        
+        ExperimentFinished_Flag = true;
+        rt_event_signal(&ExperimentControl_Event, EVENT_FINISH);
+        
+        if(AbortExperiment_Flag == true) rt_printf(" Experiment aborted\r\n");
+        if(experimentTime >= ExperimentParameters.duration) rt_printf(" End of experiment\r\n");
     }
 }
 
 void ManageLawAndCurves_Task()
 {
     rt_printf("Starting Manage Law Acquire task\r\n");
-
+    unsigned long inputEvents;
     SampleType sample;
-    SensorMessage msg;
-    unsigned int maskValue;
-    bool first_iteration = true;
-    bool periodic_set = false;
+    float wheelCommand;
 
-    while(1) {
-       
-        rt_event_wait(&ExperimentControl_Event,EVENT_LP | EVENT_AP | EVENT_START| EVENT_ABORT | EVENT_FINISHED, &maskValue, EV_ANY, TM_INFINITE);
-          
-        //rt_printf("%d",maskValue);
-         
-        if (maskValue & EVENT_AP) {
-            SampleAcquisition(&sample);
-            rt_event_clear(&ExperimentControl_Event, EVENT_AP, NULL);
-            msg.motorSpeed = sample.motorSpeed;
-            msg.platformSpeed = sample.platformSpeed;
-            msg.platformPosition = sample.platformPosition;
-            msg.motorCurrent = sample.motorCurrent;
-            msg.timestamp = ExperimentElapsedMs;
-            rt_queue_write(&SensorData_Queue, &msg, sizeof(SensorMessage), Q_NORMAL);
-        }
+    while(true) {
+        rt_event_wait(&ExperimentControl_Event, EVENT_ALL, &inputEvents, EV_ANY, TM_INFINITE);
         
-        if (maskValue & EVENT_LP) {
-            ApplySetpointCurrent(ComputeLaw(sample));
-            rt_event_clear(&ExperimentControl_Event, EVENT_LP, NULL);
-        }
+        SampleAcquisition(&sample);
         
-        if (maskValue & EVENT_START) {
-            experimentRunning = true ;
-            SampleAcquisition(&sample);
+        if(inputEvents & EVENT_INITIALIZE) {
             InitializeExperiment(sample);
-            rt_event_clear(&ExperimentControl_Event, EVENT_START, NULL);
+            rt_event_clear(&ExperimentControl_Event, EVENT_INITIALIZE, NULL);
         }
         
-        if (maskValue & EVENT_ABORT || maskValue & EVENT_FINISHED) {
+        if(inputEvents & EVENT_COMPUTELAW) {
+            wheelCommand = ComputeLaw(sample);
+            ApplySetpointCurrent(wheelCommand);
+            rt_event_clear(&ExperimentControl_Event, EVENT_COMPUTELAW, NULL);
+        }
+        
+        if(inputEvents & EVENT_READSENSORS) {
+            rt_queue_write(&SensorData_Queue, &sample, sizeof(sample), Q_NORMAL);
+            rt_event_clear(&ExperimentControl_Event, EVENT_READSENSORS, NULL);
+        }
+        
+        if(inputEvents & EVENT_FINISH) {
             ApplySetpointCurrent(0.0);
-            experimentRunning = false ; 
-            rt_event_clear(&ExperimentControl_Event, EVENT_ABORT, NULL);
-            
-            rt_event_clear(&ExperimentControl_Event, EVENT_FINISHED, NULL);
+            rt_event_clear(&ExperimentControl_Event, EVENT_FINISH, NULL);
         }
-        
-    /*    if(experimentRunning) {
-            
-            SampleAcquisition(&sample);
-            if (first_iteration) {
-                    InitializeExperiment(sample);
-                    first_iteration = false;
-                }
-            
-            if (maskValue & EVENT_LP ){
-                rt_printf("maskValue\r\n"); }
-
-                float command = ComputeLaw(sample);
-
-                ApplySetpointCurrent(command);
-           
-
-            //if (Acquisition) {
-                msg.motorSpeed = sample.motorSpeed;
-                msg.platformSpeed = sample.platformSpeed;
-                msg.platformPosition = sample.platformPosition;
-                msg.motorCurrent = sample.motorCurrent;
-                msg.timestamp = ExperimentElapsedMs;
-
-                rt_queue_write(&SensorData_Queue, &msg, sizeof(SensorMessage), Q_NORMAL);
-            //}
-        } else {
-            first_iteration = true;
-            rt_printf("Else not experiment Running manageLaw\r\n");
-            ApplySetpointCurrent(0.0);   
-        }*/
     }
 }
 
@@ -229,65 +183,40 @@ void ManageLawAndCurves_Task()
 // called from function "manageRequest" in file WheelHMI.c  
 void AbortExperiment(void)
 {
-    rt_printf("Aborted\r\n");
-    
-    // Set experiment running flag to false
-    experimentRunning = false;
-    
-    // Signal abort event
-    rt_event_signal(&ExperimentControl_Event, EVENT_ABORT);
-    
-    // Clear queue
-    rt_queue_flush(&SensorData_Queue);
-    
-    // Send 'F' termination character
-    float emptyBlock[1] = {0.0};
-    WriteRealArray('F', emptyBlock, 1);
+    AbortExperiment_Flag = true;
 }
 
 void StartExperiment(void)
 {
-    rt_printf("Started\r\n");
-    
-    // Set experiment running flag
-    experimentRunning = true;
-    
-    // Reset elapsed time
-    ExperimentElapsedMs = 0;
-    lawTickCount = 0;
-    acquisitionTickCount = 0;
-    
-    // Clear the sensor queue
     rt_queue_flush(&SensorData_Queue);
-    
-    // Signal start event
-    rt_event_signal(&ExperimentControl_Event, EVENT_START);
+    rt_sem_v(&StartExperiment_Semaphore);
 }
 
 //----------------------------------------------------------
 
 void ReturnSensorsMeasurement()
 {
-    float sensorBlock[50 * 4];
-    char terminationChar;
-    int i = 0;
+    float samplesBlock[50 * 4];
     SampleType sample;
+    RT_QUEUE_INFO queueInfo;
+    char terminationChar;
 
-    for (i = 0; i < 50; i++) {
-        // Read from the queue
-        if (rt_queue_read(&SensorData_Queue, &sample, sizeof(SampleType), TM_NONBLOCK) == sizeof(SampleType)) {
-            sensorBlock[i * 4 + 0] = sample.motorSpeed;
-            sensorBlock[i * 4 + 1] = sample.platformSpeed;
-            sensorBlock[i * 4 + 2] = sample.platformPosition;
-            sensorBlock[i * 4 + 3] = sample.motorCurrent;
-        } else {
-            break; // Exit if no more data is available
-        }
+    rt_queue_inquire(&SensorData_Queue, &queueInfo);
+    int i;
+    for(i = 0; i < queueInfo.nmessages; i++) {
+        rt_queue_read(&SensorData_Queue, &sample, sizeof(sample), TM_NONBLOCK);
+        samplesBlock[(i * 4)] = sample.motorSpeed;
+        samplesBlock[(i * 4) + 1] = sample.platformSpeed;
+        samplesBlock[(i * 4) + 2] = sample.platformPosition;
+        samplesBlock[(i * 4) + 3] = sample.motorCurrent;
     }
+    
+    if(ExperimentFinished_Flag == false)
+        terminationChar = 'S';
+    else
+        terminationChar = 'F';
 
-    terminationChar = experimentRunning ? 'S' : 'F';
-
-    WriteRealArray(terminationChar, samplesBlock, n * 4);
+    WriteRealArray(terminationChar, samplesBlock, queueInfo.nmessages * 4);
 }
 
 //--------------------------------------------------------------------
@@ -317,10 +246,6 @@ int main(int argc, char* argv[])
 
     // Global variables initialization       
     // -------------------------------
-    experimentRunning = false;
-    ExperimentElapsedMs = 0;
-    lawTickCount = 0;
-    acquisitionTickCount = 0;
     // *** This space must be completed  if needed   *****
 
     // ------------------------------------- 
@@ -330,12 +255,12 @@ int main(int argc, char* argv[])
     // Message queues creation               
     // ------------------------------------- 
     rt_queue_create(&SensorData_Queue, "SensorQueue",
-                    SENSOR_QUEUE_SIZE * SENSOR_MSG_SIZE, SENSOR_QUEUE_SIZE, Q_FIFO);
+                    SENSOR_QUEUE_SIZE * sizeof(SampleType), SENSOR_QUEUE_SIZE, Q_FIFO);
 
     // Semaphores creation                 
     // ------------------------------------
     rt_sem_create(&ExitApplication_Semaphore, "Exit", 0, S_FIFO);
-    rt_sem_create(&StartExperiment_Semaphore, "StartExp", 0, S_FIFO);
+    rt_sem_create(&StartExperiment_Semaphore, "StartExp", 0, S_PULSE);
 
     // Mutual exclusion semaphore creation                     
     //---------------------------------------------------------
