@@ -91,6 +91,8 @@ typedef struct {
 // bool myFlag
 volatile bool experimentRunning = false;
 volatile unsigned long ExperimentElapsedMs = 0;
+volatile unsigned long lawTickCount = 0;
+volatile unsigned long acquisitionTickCount = 0;
 //**** This space must be completed if needed *****  
 
 
@@ -108,47 +110,34 @@ void HumanMachineInterface_Task()
     rt_printf("Starting Human/Machine Interface task\r\n");
     ManageRequest();
 }
-
 void TimeManagement_Task()
 {
     rt_printf("Starting Time Management task\r\n");
 
-    // Set task periodic at 1ms
-    rt_task_set_periodic(NULL, TM_NOW, TIME_MANAGEMENT_PERIOD_NS);
 
     while(1) {
-        rt_sem_p(&StartExpiremnt_Semaphore, TM_INFINITE);
+        rt_task_wait_period(NULL);
 
-        if (!init){
-            rt_event_signal(&ExperimentControl_Event, EVENT_START);
-            init = true;
-        }
-
-        while(experimentRunning == true){
+        if(experimentRunning == true){
             if(ConnectionIsActive()){
                 ExperimentElapsedMs++;
-                counter_lp++;
-                counter_ap++;
+                lawTickCount++;
+                acquisitionTickCount++;
 
-                if(counter_strike >= ExperimentParameters.duration){
-                    FlagAbort = true;
-                    ExperimentElapsedMs = 0;
+                if(ExperimentElapsedMs >= ExperimentParameters.duration){
+                    rt_event_signal(&ExperimentControl_Event, EVENT_FINISHED);
+                    experimentRunning = false;
                 }
-                if(counter_lp >= ExperimentParameters.lawPeriod){
+                if(lawTickCount >= ExperimentParameters.lawPeriod){
                     rt_event_signal(&ExperimentControl_Event, EVENT_LP);
-                    counter_lp = 0;
+                    lawTickCount = 0;
                 }
-                if (counter_ap >= ExperimentParameters.acquisitionPeriod){
+                if (acquisitionTickCount >= ExperimentParameters.acquisitionPeriod){
                     rt_event_signal(&ExperimentControl_Event, EVENT_AP);
-                    counter_ap = 0;
+                    acquisitionTickCount = 0;
                 }
             }
-            rt_task_wait_period(NULL);
-
         }
-        init = false;
-        rt_event_signal(&ExperimentControl_Event, EVENT_ABORT);
-        ExperimentElapsedMs = 0;
     }
 }
 
@@ -171,7 +160,12 @@ void ManageLawAndCurves_Task()
         if (maskValue & EVENT_AP) {
             SampleAcquisition(&sample);
             rt_event_clear(&ExperimentControl_Event, EVENT_AP, NULL);
-            rt_queue_write(&SensorData_Queue, &msg, sizeof(SampleType), Q_NORMAL);
+            msg.motorSpeed = sample.motorSpeed;
+            msg.platformSpeed = sample.platformSpeed;
+            msg.platformPosition = sample.platformPosition;
+            msg.motorCurrent = sample.motorCurrent;
+            msg.timestamp = ExperimentElapsedMs;
+            rt_queue_write(&SensorData_Queue, &msg, sizeof(SensorMessage), Q_NORMAL);
         }
         
         if (maskValue & EVENT_LP) {
@@ -260,6 +254,8 @@ void StartExperiment(void)
     
     // Reset elapsed time
     ExperimentElapsedMs = 0;
+    lawTickCount = 0;
+    acquisitionTickCount = 0;
     
     // Clear the sensor queue
     rt_queue_flush(&SensorData_Queue);
@@ -323,6 +319,8 @@ int main(int argc, char* argv[])
     // -------------------------------
     experimentRunning = false;
     ExperimentElapsedMs = 0;
+    lawTickCount = 0;
+    acquisitionTickCount = 0;
     // *** This space must be completed  if needed   *****
 
     // ------------------------------------- 
