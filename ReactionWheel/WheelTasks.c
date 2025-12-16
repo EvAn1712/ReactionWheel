@@ -2,12 +2,10 @@
 // *                I S A E - S U P A E R O                  *
 // *                                                         *
 // *               Reaction Wheel Application                *
-// *                      Version 2024                       *
+// *                      Version 2021                       *
 // *                                                         *
-// * Student version                                         *
+// * Master version                                          *
 // ***********************************************************
-// Xenomai online documentation : 
-// https://gitlab-pages.isae-supaero.fr/l.alloza/doc-xenomai3/group__alchemy.html
 
 #include "ReactionWheel.h"
 
@@ -16,90 +14,178 @@
 //--------------------------------------------
 
 #define HUMAN_MACHINE_INTERFACE_PRIORITY     33
+#define LAWS_AND_DISPLAY_PROCESSING_PRIORITY 34
 #define TIME_MANAGEMENT_PRIORITY             35
-#define MANAGE_LAW_ACQUIRE_PRIORITY          37
-#define TIME_MANAGEMENT_PERIOD_NS            1000000  // 1ms in nanoseconds
-//********   This space must be completed if needed *****  
 
 //--------------------------------------------
 // Tasks descriptors                          
 //--------------------------------------------
-// https://gitlab-pages.isae-supaero.fr/l.alloza/doc-xenomai3/group__alchemy__task.html
 
 RT_TASK HumanMachineInterface_TaskDescriptor;
-RT_TASK ManageLawAcquire_TaskDescriptor;
 RT_TASK TimeManagement_TaskDescriptor;
-RT_TASK ManageRequest_TaskDescriptor;
+RT_TASK LawsAndDisplayProcessing_TaskDescriptor;
 
 //-------------------------------------------
-//  Semaphores descriptors                   
+//  Semaphores identifiers                   
 //-------------------------------------------
-// https://gitlab-pages.isae-supaero.fr/l.alloza/doc-xenomai3/group__alchemy__sem.html
+// RT_SEM mySemaphore;                        
+//     **** This space must be completed  *****
 
-RT_SEM StartExperiment_Semaphore; //start
-RT_SEM ExitApplication_Semaphore; //finished
-//********   This space must be completed if needed *****  
+RT_SEM StartExperiment_Semaphore;
+RT_SEM ExitApplication_Semaphore;
 
 //--------------------------------------------
-//  Events descriptors
+//  Events identifiers
 //--------------------------------------------
-// https://gitlab-pages.isae-supaero.fr/l.alloza/doc-xenomai3/group__alchemy__event.html
+// RT_EVENT myEvents;
+//     **** This space must be completed  *****
+RT_EVENT Experiment_Events;
 
-RT_EVENT ExperimentControl_Event;
-
-#ifndef BIT
 #define BIT(n) (1<<n)
-#endif
-#define EVENT_START    BIT(0)
-#define EVENT_ABORT    BIT(1)
-#define EVENT_FINISHED BIT(2)  
-#define EVENT_LP    BIT(3)
-#define EVENT_AP    BIT(4)
-#define EVENT_ALL (EVENT_AP | EVENT_LP | EVENT_START | EVENT_ABORT | EVENT_FINISHED)
+#define EVENT_INITIALIZE    BIT(0)
+#define EVENT_COMPUTELAW    BIT(1)
+#define EVENT_READSENSORS   BIT(2)
+#define EVENT_FINISH        BIT(3)
+#define EVENT_ALL (EVENT_INITIALIZE + EVENT_COMPUTELAW + EVENT_READSENSORS + EVENT_FINISH)
 
 //--------------------------------------------
-// Mutual exclusion semaphores descriptors    
+// Mutual exclusion semaphores identifiers    
 //--------------------------------------------
-// https://gitlab-pages.isae-supaero.fr/l.alloza/doc-xenomai3/group__alchemy__mutex.html
-RT_MUTEX DataMutex;
-//********   This space must be completed if needed *****  
+// RT_MUTEX myMutex;                          
+//  ******   This space must be completed ****** 
 
 //--------------------------------------------
-// Message queues descriptors                 
+// Message queues Identifiers                 
 //--------------------------------------------
-// https://gitlab-pages.isae-supaero.fr/l.alloza/doc-xenomai3/group__alchemy__queue.html
+// RT_QUEUE  myQueue;                         
+//**** This space must be completed  *****  
+RT_QUEUE SensorsMeasurement_Queue;
 
-//********   This space must be completed if needed *****  
-RT_QUEUE SensorData_Queue;
-
-#define SENSOR_QUEUE_SIZE 100
-#define SENSOR_MSG_SIZE sizeof(SensorMessage)
-
-typedef struct {
-    float motorSpeed;
-    float platformSpeed;
-    float platformPosition;
-    float motorCurrent;
-    unsigned long timestamp;
-} SensorMessage;
-
-
-//--------------------------------------------------------------------------
 // Global variables communication and synchronization tasks by shared memory 
 //--------------------------------------------------------------------------
-// bool myFlag
-volatile bool experimentRunning = false;
-volatile unsigned long ExperimentElapsedMs = 0;
-//**** This space must be completed if needed *****  
 
+bool ExperimentFinished_Flag;
+bool AbortExperiment_Flag;
 
 // declared in WheelHMI.c 
 extern ExperimentParametersType ExperimentParameters;
 
-//--------------------------------------------------------------------
-//
-//                  The Tasks
-//
+// **************************************************************************
+// *
+// *                  The Tasks
+// *
+// **************************************************************************
+
+void TimeManagement_Task()
+{
+    rt_printf("Starting Time management task \r\n");
+    int experimentTime;
+    rt_task_set_periodic(NULL, TM_NOW, 1000000);
+    while(true) { // infinite loop
+
+        rt_sem_p(&StartExperiment_Semaphore, TM_INFINITE);  // wait for semaphore
+
+        rt_event_signal(&Experiment_Events,EVENT_INITIALIZE);
+        experimentTime = 0;
+        AbortExperiment_Flag = false;
+        ExperimentFinished_Flag = false;
+        while((experimentTime < ExperimentParameters.duration) && (AbortExperiment_Flag == false) && (ConnectionIsActive() == true)) {
+            rt_task_wait_period(NULL);
+            experimentTime++;
+            if((experimentTime % ExperimentParameters.lawPeriod) == 0) {
+                rt_event_signal(&Experiment_Events, EVENT_COMPUTELAW);
+            }
+            if((experimentTime % ExperimentParameters.acquisitionPeriod) == 0) {
+                rt_event_signal(&Experiment_Events, EVENT_READSENSORS);
+            }
+        }
+        ExperimentFinished_Flag = true;
+        rt_event_signal(&Experiment_Events, EVENT_FINISH);
+  
+        if(AbortExperiment_Flag == true)  rt_printf(" Experiment aborted\r\n");
+        if(experimentTime >= ExperimentParameters.duration) rt_printf(" End of experiment\r\n");
+    }
+}
+
+void LawsAndDisplayProcessing_Task()
+{
+    rt_printf("Starting Law & Display Processing task\r\n");
+    unsigned long inputEvents;
+    SampleType sample;
+    float wheelCommand;
+
+    while(true) { // infinite loop
+        
+        // wait for any experiment event
+        rt_event_wait(&Experiment_Events, EVENT_ALL, &inputEvents, EV_ANY, TM_INFINITE);
+        
+        SampleAcquisition(&sample);
+        if( inputEvents & EVENT_INITIALIZE ) {
+            InitializeExperiment(sample);
+            rt_event_clear(&Experiment_Events, EVENT_INITIALIZE, NULL);
+        }
+        if( inputEvents & EVENT_COMPUTELAW ) {
+            wheelCommand = ComputeLaw(sample);
+            ApplySetpointCurrent(wheelCommand);
+            rt_event_clear(&Experiment_Events, EVENT_COMPUTELAW, NULL);
+        }
+        if( inputEvents & EVENT_READSENSORS ) {
+            rt_queue_write(&SensorsMeasurement_Queue, &sample, sizeof(sample), Q_NORMAL);
+            rt_event_clear(&Experiment_Events, EVENT_READSENSORS, NULL);
+        }
+        if( inputEvents & EVENT_FINISH ) {
+            ApplySetpointCurrent(0);
+            rt_event_clear(&Experiment_Events, EVENT_FINISH, NULL);
+        }
+    }
+}
+
+
+
+//-----------------------------------------------------------
+// functions called from HMI_Utilities
+
+/** This function is called when the user press on Abort during an experiment \n
+ * called from function "manageRequest" in file WheelHMI.c  
+ */
+void AbortExperiment(void)
+{
+    AbortExperiment_Flag = true;
+}
+//-----------------------------------------------------------
+
+void StartExperiment(void)
+{
+    rt_sem_v(&StartExperiment_Semaphore);   // give semaphore
+}
+//----------------------------------------------------------
+
+void ReturnSensorsMeasurement()
+{
+    float samplesBlock[50 * 4];
+    SampleType sample;
+    RT_QUEUE_INFO queueInfo;
+    char terminationChar;
+
+    rt_queue_inquire(&SensorsMeasurement_Queue, &queueInfo);
+    int i;
+    for(i = 0; i < queueInfo.nmessages; i++) {
+        rt_queue_read(&SensorsMeasurement_Queue, &sample, sizeof(sample), TM_NONBLOCK);
+        samplesBlock[(i * 4)] = sample.motorSpeed;
+        samplesBlock[(i * 4) + 1] = sample.platformSpeed;
+        samplesBlock[(i * 4) + 2] = sample.platformPosition;
+        samplesBlock[(i * 4) + 3] = sample.motorCurrent;
+
+    }
+    if(ExperimentFinished_Flag == false)
+        terminationChar = 'S';
+    else
+        terminationChar = 'F';
+
+    WriteRealArray(terminationChar, samplesBlock, queueInfo.nmessages * 4);
+
+}
+
 //--------------------------------------------------------------------
 
 void HumanMachineInterface_Task()
@@ -107,223 +193,8 @@ void HumanMachineInterface_Task()
     rt_printf("Starting Human/Machine Interface task\r\n");
     ManageRequest();
 }
-
-void TimeManagement_Task()
-{
-    rt_printf("Starting Time Management task\r\n");
-
-    // Set task periodic at 1ms
-    rt_task_set_periodic(NULL, TM_NOW, TIME_MANAGEMENT_PERIOD_NS);
-
-    while(1) {
-        rt_task_wait_period(NULL);
-
-        if(experimentRunning) {
-            // Update elapsed time 
-            ExperimentElapsedMs++;
-
-            // Check for experiment duration timeout
-            if(ExperimentElapsedMs >= ExperimentParameters.duration) {
-                
-                rt_printf("Task finished \r\n");
-                
-                experimentRunning = false;
-                rt_event_signal(&ExperimentControl_Event, EVENT_FINISHED);
-                //rt_sem_v(&ExitApplication_Semaphore);
-    
-                // Clear queue
-                rt_queue_flush(&SensorData_Queue);
-
-                // Send 'F' termination character
-                float emptyBlock[1] = {0.0};
-                WriteRealArray('F', emptyBlock, 1);
-            }
-            
-            if (ExperimentElapsedMs%ExperimentParameters.acquisitionPeriod == 0){
-                rt_event_signal(&ExperimentControl_Event,EVENT_AP);
-            } 
-
-            if (ExperimentElapsedMs%ExperimentParameters.lawPeriod == 0){
-               rt_event_signal(&ExperimentControl_Event,EVENT_LP);
-            } 
-        }
-    }
-}
-
-void ManageLawAcquire_Task()
-{
-    rt_printf("Starting Manage Law Acquire task\r\n");
-
-    SampleType sample;
-    SensorMessage msg;
-    unsigned int maskValue;
-    bool first_iteration = true;
-    bool periodic_set = false;
-
-    while(1) {
-        // Set task periodic with lawPeriod once experiment starts
-        if(experimentRunning && !periodic_set) {
-            rt_task_set_periodic(NULL, TM_NOW, (unsigned long long)ExperimentParameters.lawPeriod);
-            periodic_set = true;
-        }
-        
-        if(periodic_set && experimentRunning) {
-            rt_task_wait_period(NULL);
-        } else {
-            // When not in periodic mode, sleep briefly
-            if(periodic_set && !experimentRunning) {
-                // Stop periodic mode
-                periodic_set = false;
-            }
-            rt_task_sleep(10000000); // 10ms sleep while waiting for experiment to start
-        }
-        
-        rt_event_wait(&ExperimentControl_Event,EVENT_LP | EVENT_AP | EVENT_START| EVENT_ABORT | EVENT_FINISHED, &maskValue, EV_ANY, TM_INFINITE);
-          
-        rt_printf("%d",maskValue);
-         
-        if (maskValue & EVENT_AP) {
-            rt_printf("AP EVENT");
-            SampleAcquisition(&sample);
-            rt_event_clear(&ExperimentControl_Event, EVENT_AP, NULL);
-            rt_queue_write(&SensorData_Queue, &msg, sizeof(SampleType), Q_NORMAL);
-        }
-        
-        if (maskValue & EVENT_LP) {
-            rt_printf("LP EVENT");
-            ApplySetpointCurrent(ComputeLaw(sample));
-            rt_event_clear(&ExperimentControl_Event, EVENT_LP, NULL);
-        }
-        
-        if (maskValue & EVENT_START) {
-            rt_printf("Event started");
-            experimentRunning = true ;
-            SampleAcquisition(&sample);
-            InitializeExperiment(sample);
-            rt_event_clear(&ExperimentControl_Event, EVENT_START, NULL);
-        }
-        
-        if (maskValue & EVENT_ABORT || maskValue & EVENT_FINISHED) {
-            rt_printf("Event aborted or finished");
-            ApplySetpointCurrent(0.0);
-            experimentRunning = false ; 
-            rt_event_clear(&ExperimentControl_Event, EVENT_ABORT, NULL);
-            rt_event_clear(&ExperimentControl_Event, EVENT_FINISHED, NULL);
-        }
-        
-    /*    if(experimentRunning) {
-            
-            SampleAcquisition(&sample);
-            if (first_iteration) {
-                    InitializeExperiment(sample);
-                    first_iteration = false;
-                }
-            
-            if (maskValue & EVENT_LP ){
-                rt_printf("maskValue\r\n"); }
-
-                float command = ComputeLaw(sample);
-
-                ApplySetpointCurrent(command);
-           
-
-            //if (Acquisition) {
-                msg.motorSpeed = sample.motorSpeed;
-                msg.platformSpeed = sample.platformSpeed;
-                msg.platformPosition = sample.platformPosition;
-                msg.motorCurrent = sample.motorCurrent;
-                msg.timestamp = ExperimentElapsedMs;
-
-                rt_queue_write(&SensorData_Queue, &msg, sizeof(SensorMessage), Q_NORMAL);
-            //}
-        } else {
-            first_iteration = true;
-            rt_printf("Else not experiment Running manageLaw\r\n");
-            ApplySetpointCurrent(0.0);   
-        }*/
-    }
-}
-
-
-//-----------------------------------------------------------
-// functions called from HMI_Utilities
-
-// This function is called when the user press on Abort during an experiment \n
-// called from function "manageRequest" in file WheelHMI.c  
-void AbortExperiment(void)
-{
-    rt_printf("Aborted\r\n");
-    
-    // Set experiment running flag to false
-    experimentRunning = false;
-    
-    // Signal abort event
-    rt_event_signal(&ExperimentControl_Event, EVENT_ABORT);
-    
-    // Clear queue
-    rt_queue_flush(&SensorData_Queue);
-    
-    // Send 'F' termination character
-    float emptyBlock[1] = {0.0};
-    WriteRealArray('F', emptyBlock, 1);
-}
-
-void StartExperiment(void)
-{
-    rt_printf("Started\r\n");
-    
-    // Set experiment running flag
-    experimentRunning = true;
-    
-    // Reset elapsed time
-    ExperimentElapsedMs = 0;
-    
-    // Clear the sensor queue
-    rt_queue_flush(&SensorData_Queue);
-    
-    // Signal start event
-    rt_event_signal(&ExperimentControl_Event, EVENT_START);
-}
-
-//----------------------------------------------------------
-
-void ReturnSensorsMeasurement()
-{
-    SampleType sample;
-    SensorMessage msg;
-    
-    float samplesBlock[50 * 4];
-    char terminationChar;
-    int i;
-    float AP = ExperimentParameters.acquisitionPeriod;
-    float LP = ExperimentParameters.lawPeriod;
-    //int n = (int)(AP/ExperimentParameters.duration); 
-    //int n = (int)(LP/AP); 
-    int n = 10;
-    //RT_QUEUE_INFO Informations;
-    //rt_queue_inquire(&SensorData_Queue,&Informations);
-
-    //int n = Informations.nmessages;
-    
-    for(i = 0; i < n; i++) {
-        if (rt_queue_read(&SensorData_Queue,&msg, sizeof(SensorMessage), TM_INFINITE) >0) {
-        
-        samplesBlock[(i * 4)]     = msg.motorSpeed;
-        samplesBlock[(i * 4) + 1] = msg.platformSpeed;
-        samplesBlock[(i * 4) + 2] = msg.platformPosition;
-        samplesBlock[(i * 4) + 3] = msg.motorCurrent;
-        }
-    }
-   
-    terminationChar = experimentRunning ? 'S' : 'F';  
-    
-    // terminationChar = 'F' if the experiment is finished
-    WriteRealArray(terminationChar, samplesBlock, n * 4);
-}
-
-//--------------------------------------------------------------------
-
-// Linux Signals Handler
+/** Linux Signals Handler
+ */
 void stopNow(int sig)
 {
     rt_sem_v(&ExitApplication_Semaphore); // give stop semaphore to main task 
@@ -349,47 +220,41 @@ int main(int argc, char* argv[])
 
     // Global variables initialization       
     // -------------------------------
-    // myFlag = false;
-    // *** This space must be completed  if needed   *****
+    // *** This space must be completed  *****
 
-    // ------------------------------------- 
+
     // Events creation               
-    rt_event_create(&ExperimentControl_Event, "ExperimentControl", 0, EV_FIFO);
+    // ------------------------------------- 
+    // *** This space must be completed  ******
+    rt_event_create(&Experiment_Events,"Events",0,EV_FIFO);
     
     // Message queues creation               
     // ------------------------------------- 
-    // *** This space must be completed  if needed   ******
-    rt_queue_create(&SensorData_Queue,"SensorQueue",
-                    SENSOR_QUEUE_SIZE * SENSOR_MSG_SIZE, SENSOR_QUEUE_SIZE,Q_FIFO);
+    // *** This space must be completed  ******
+    rt_queue_create(&SensorsMeasurement_Queue, "Measure", 50 * sizeof(SampleType), 50, Q_FIFO);
 
     // Semaphores creation                 
     // ------------------------------------
     rt_sem_create(&ExitApplication_Semaphore, "Exit", 0, S_FIFO);
-    rt_sem_create(&StartExperiment_Semaphore, "StartExp", 0, S_FIFO);
-
-
-    // **** This space must be completed  if needed   ***** 
-    
+    // **** This space must be completed  ***** 
+    rt_sem_create(&StartExperiment_Semaphore, "Start", 0, S_PULSE);
 
     // Mutual exclusion semaphore creation                     
     //---------------------------------------------------------
-    rt_mutex_create(&DataMutex, "DataMutex");
-    // **** This space must be completed  if needed   ***** 
+    // rt_mutex_create(&myMutex, "mx" );                       
+    //    **** This space must be completed  ***** 
 
     // Tasks creation                                          
     //---------------------------------------------------------
-    rt_task_create(&HumanMachineInterface_TaskDescriptor, "ReturnSensorsMeasurementestTask", DEFAULTSTACKSIZE, HUMAN_MACHINE_INTERFACE_PRIORITY, 0);
+    //   **** This space must be completed  ***** 
     rt_task_create(&TimeManagement_TaskDescriptor, "TimeManagementTask", DEFAULTSTACKSIZE, TIME_MANAGEMENT_PRIORITY, 0);
-    rt_task_create(&ManageLawAcquire_TaskDescriptor, "ManageLawAcquireTask", DEFAULTSTACKSIZE, MANAGE_LAW_ACQUIRE_PRIORITY, 0);
-
-
+    rt_task_create(&LawsAndDisplayProcessing_TaskDescriptor, "LawsAndDisplayProcessingTask", DEFAULTSTACKSIZE, LAWS_AND_DISPLAY_PROCESSING_PRIORITY, 0);
+    rt_task_create(&HumanMachineInterface_TaskDescriptor, "ManageRequestTask", DEFAULTSTACKSIZE, HUMAN_MACHINE_INTERFACE_PRIORITY, 0);
 
     // Tasks starting
-    rt_task_start(&HumanMachineInterface_TaskDescriptor, &HumanMachineInterface_Task, NULL);
     rt_task_start(&TimeManagement_TaskDescriptor, &TimeManagement_Task, NULL);
-    rt_task_start(&ManageLawAcquire_TaskDescriptor, &ManageLawAcquire_Task, NULL);
-    
-// **** This space must be completed  if needed   ***** 
+    rt_task_start(&LawsAndDisplayProcessing_TaskDescriptor, &LawsAndDisplayProcessing_Task, NULL);
+    rt_task_start(&HumanMachineInterface_TaskDescriptor, &HumanMachineInterface_Task, NULL);
 
     //-----------------------------------------------------------
     // Main Task waits on exit semaphore                          
@@ -399,32 +264,35 @@ int main(int argc, char* argv[])
     //-----------------------------------------------------------
     // Tasks destruction                                         
     //-----------------------------------------------------------
-    // rt_task_ delete(...);                                 
+    // rt_task_ delete(&myTask);                                 
     rt_printf("\r\n \r\n Destruction of \r\n  - Tasks\r\n  - Queues\r\n  - Semaphores\r\n  - Events\r\n  - Mutexes\r\n");
-    // **** This space must be completed  if needed   ***** 
+    // **** This space must be completed *****  
     rt_task_delete(&HumanMachineInterface_TaskDescriptor);
     rt_task_delete(&TimeManagement_TaskDescriptor);
-    rt_task_delete(&ManageLawAcquire_TaskDescriptor);
+    rt_task_delete(&LawsAndDisplayProcessing_TaskDescriptor);
+
     //------------------------------------------------------------
     // Semaphores destruction                                     
     //-------------------------------------------------------------
-    rt_sem_delete(&ExitApplication_Semaphore);
-    rt_sem_delete(&StartExperiment_Semaphore);
+    // rt_sem_ delete(&mySemaphore);                               
+    //   **** This space must be completed  ***** 
 
-    // **** This space must be completed  if needed   ***** 
-    
+    rt_sem_delete(&StartExperiment_Semaphore);
+    rt_sem_delete(&ExitApplication_Semaphore);
+
     //------------------------------------------------------------
     // Events destruction                                 
     //------------------------------------------------------------
-    rt_event_delete(&ExperimentControl_Event);
-   
+    // rt_event_delete(&myEvents);                                 
+    // **** This space must be completed  *****
+    rt_event_delete(&Experiment_Events);
     
     //------------------------------------------------------------
     // Message queues destruction                                 
     //------------------------------------------------------------
-    rt_queue_delete(&SensorData_Queue);                                 
-    // **** This space must be completed  if needed   *****
-    rt_mutex_delete(&DataMutex);
+    // rt_queue_delete(&myQueue);                                 
+    // **** This space must be completed  *****
+    rt_queue_delete(&SensorsMeasurement_Queue);
 
     rt_printf(" Application ..... finished--> exit\r\n");
     // Peripherals uninitialization 

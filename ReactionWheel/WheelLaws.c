@@ -22,6 +22,8 @@ float   Ki, Kp, Kv;             // Law coefficients
 float   A, B, C, D, E;
 int     LawParameter;
 float   PeriodLaw;
+float   error,error_n1,inte,inte_n1, error_n2;
+float   wheelCommand_n1, wheelCommand_n2;
 
 // Global variables
 // declared in WheelHMI.c 
@@ -48,6 +50,11 @@ void InitializeLaw(void)
     U_n1 = 0;
     U_n2 = 0;
     Y_n2 = 0;
+    wheelCommand_n1 = 0;
+    wheelCommand_n2 = 0;
+    error_n1 = 0;
+    error_n2 = 0;
+    inte_n1 = 0;
     LawParameter = ExperimentParameters.law;
     PeriodLaw = (float) ((ExperimentParameters.lawPeriod) / 1000.0);
     switch(LawParameter) {
@@ -133,17 +140,49 @@ float ComputeLaw(SampleType measure)
 
         break;
     case 20:   // lead compensator loop
-       
+        A = 3.335;
+        B = -3.15;
+        C = -0.715;
+        
+        wheelCommand = A*error + B*error_n1 - C*wheelCommand_n1;
+        wheelCommand_n1 = wheelCommand;
+        error_n1=error;
         break;
+        
     case 21:   // lead  lag compensator loop
+        A = 3.324;
+        B = -6.315;
+        C = 2.997;
+        D = -1.67;
+        E = 0.671;
         
+        wheelCommand = A*error + B*error_n1 + C*error_n2 - D*wheelCommand_n1 - E*wheelCommand_n2;
+        wheelCommand_n2 = wheelCommand_n1;
+        wheelCommand_n1= wheelCommand;
+        error_n2 = error_n1;
+        error_n1 = error ;
         break;
-    case 50:   // state feedback
         
+    case 50:   // state feedback
+        Kp = 2.53;
+        Kv = 3.7616;
+                
+        wheelCommand = Kp*(currentSetpoint - position) - Kv*speed; 
         break;
 
     case 51:   // state feedback with integrator
-       
+       /* Ki = 24.1647;
+        Kp = 16.4227;
+        Kv = 5.3531;*/
+
+        Ki = 9.4041;
+        Kp = 10.1015;
+        Kv = 3.8551;        
+
+        inte = PeriodLaw * (error+error_n1)/2 + inte_n1;
+        wheelCommand = Ki*inte - Kv * speed - Kp*position;
+        error_n1=error;
+        inte_n1 = inte;
         break;
     }//  end of switch (lawParameter)
     return(wheelCommand);
